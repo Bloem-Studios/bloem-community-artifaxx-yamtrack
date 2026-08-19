@@ -106,7 +106,11 @@ jobs:
           go build -trimpath -ldflags="-s -w -X main.version=${version}" -o "dist/${binary}" .
           checksum=$(shasum -a 256 "dist/${binary}" | awk '{print $1}')
           printf '%s %s\n' "$checksum" "$binary" > dist/checksums.txt
-          sed "s/__CHECKSUM__/${checksum}/" manifest.json > "dist/manifest-${GOOS}-${GOARCH}.json"
+          # Derive the released manifest from the release version, so the
+          # tag-push path cannot ship a manifest whose version disagrees with
+          # the tag and the binary's -X main.version stamp.
+          jq --arg v "$version" --arg c "$checksum" \
+            '.version = $v | .checksum = $c' manifest.json > "dist/manifest-${GOOS}-${GOARCH}.json"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
