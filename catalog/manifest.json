@@ -1,0 +1,75 @@
+{
+  "plugins": [
+    {
+      "manifest": {
+        "plugin_id": "silo.yamtrack",
+        "version": "0.1.1",
+        "silo_api_version": "v1",
+        "supported_platforms": [
+          {
+            "os": "darwin",
+            "arch": "arm64"
+          },
+          {
+            "os": "linux",
+            "arch": "amd64"
+          },
+          {
+            "os": "linux",
+            "arch": "arm64"
+          }
+        ],
+        "capabilities": [
+          {
+            "type": "watch_sync_provider.v1",
+            "id": "yamtrack",
+            "display_name": "Yamtrack",
+            "description": "Scrobble playback to a self-hosted Yamtrack instance using its Jellyfin webhook URL.",
+            "watch_sync_provider": {
+              "auth_methods": [
+                "WATCH_SYNC_AUTH_METHOD_API_KEY"
+              ],
+              "scrobble_playback": true,
+              "supported_media_types": [
+                "WATCH_SYNC_MEDIA_TYPE_MOVIE",
+                "WATCH_SYNC_MEDIA_TYPE_EPISODE"
+              ],
+              "external_id_namespaces": [
+                "tmdb",
+                "imdb",
+                "tvdb"
+              ],
+              "max_batch_size": 1
+            }
+          }
+        ],
+        "presentation": {
+          "display_name": "Yamtrack",
+          "summary": "Scrobble movie and episode playback to a self-hosted Yamtrack instance.",
+          "description_markdown": "Sends live playback starts and completed stops to Yamtrack through its existing Jellyfin webhook. History import, progress sync, favorites, and watchlists are not included.",
+          "setup_markdown": "1. Install this plugin and enable it.\n2. In Yamtrack, open **Account settings \u00e2\u2020\u2019 Integrations** and copy the Jellyfin webhook URL.\n3. In Silo, open **Settings \u00e2\u2020\u2019 Watch Providers**, connect Yamtrack, and paste that URL.\n\nMovies need TMDB or IMDb. Episodes need TVDB or IMDb; Yamtrack skips TMDB-only episodes.",
+          "homepage_url": "https://github.com/FuzzyGrim/Yamtrack",
+          "source_url": "https://github.com/artifaxx/silo-plugin-yamtrack",
+          "support_url": "https://github.com/artifaxx/silo-plugin-yamtrack/issues",
+          "changelog_url": "https://github.com/artifaxx/silo-plugin-yamtrack/releases",
+          "publisher_name": "Silo",
+          "publisher_url": "https://github.com/artifaxx",
+          "license_spdx": "AGPL-3.0-or-later"
+        }
+      },
+      "repo_url": "https://github.com/artifaxx/silo-plugin-yamtrack",
+      "checksums_url": "https://github.com/artifaxx/silo-plugin-yamtrack/releases/download/v0.1.1/checksums.txt",
+      "binaries": {
+        "darwin/arm64": {
+          "url": "https://github.com/artifaxx/silo-plugin-yamtrack/releases/download/v0.1.1/plugin-darwin-arm64"
+        },
+        "linux/amd64": {
+          "url": "https://github.com/artifaxx/silo-plugin-yamtrack/releases/download/v0.1.1/plugin-linux-amd64"
+        },
+        "linux/arm64": {
+          "url": "https://github.com/artifaxx/silo-plugin-yamtrack/releases/download/v0.1.1/plugin-linux-arm64"
+        }
+      }
+    }
+  ]
+}
