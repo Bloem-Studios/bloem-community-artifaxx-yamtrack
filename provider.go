@@ -3,15 +3,19 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	pluginv1 "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginproto/silo/plugin/v1"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 const maxErrorBodyBytes = 4 << 10
@@ -139,15 +143,26 @@ func (p *Provider) scrobble(
 	}
 	if err := p.post(ctx, webhookURL, body, false); err != nil {
 		result.Fault = faultFromError(err)
-		if result.Fault.GetCode() == pluginv1.WatchSyncFaultCode_WATCH_SYNC_FAULT_CODE_INVALID_REQUEST {
-			result.Status = pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_REJECTED
-			return result
-		}
-		result.Status = pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_RETRY
+		result.Status = applyStatusForFault(result.Fault.GetCode())
 		return result
 	}
 	result.Status = pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_APPLIED
 	return result
+}
+
+// applyStatusForFault maps a fault onto the per-event status the host acts on.
+// The proto reserves RETRY for TEMPORARY and RATE_LIMITED. INVALID_CREDENTIAL is
+// connection-wide, so ApplyEvents hoists it onto the response before this status
+// is ever read.
+func applyStatusForFault(code pluginv1.WatchSyncFaultCode) pluginv1.WatchSyncApplyStatus {
+	switch code {
+	case pluginv1.WatchSyncFaultCode_WATCH_SYNC_FAULT_CODE_INVALID_REQUEST,
+		pluginv1.WatchSyncFaultCode_WATCH_SYNC_FAULT_CODE_PERMANENT,
+		pluginv1.WatchSyncFaultCode_WATCH_SYNC_FAULT_CODE_PERMISSION_DENIED:
+		return pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_REJECTED
+	default:
+		return pluginv1.WatchSyncApplyStatus_WATCH_SYNC_APPLY_STATUS_RETRY
+	}
 }
 
 func (p *Provider) probe(ctx context.Context, webhookURL string) error {
@@ -164,35 +179,110 @@ func (p *Provider) post(ctx context.Context, webhookURL string, body []byte, pro
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, reader)
 	if err != nil {
-		return fmt.Errorf("create yamtrack webhook request: %w", err)
+		// err embeds the request URL, and that URL carries the token.
+		return errInvalidRequest("yamtrack webhook URL is not a valid request URL")
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("send yamtrack webhook request: %w", err)
+		return transportError(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBodyBytes))
 
 	if probe {
-		switch resp.StatusCode {
-		case http.StatusBadRequest:
-			return nil
-		case http.StatusUnauthorized:
-			return errInvalidCredential("yamtrack webhook token was rejected")
-		default:
-			return errInvalidRequest(fmt.Sprintf("yamtrack webhook URL did not look like a Jellyfin webhook: status %d", resp.StatusCode))
+		return probeStatusError(resp.StatusCode)
+	}
+	return postStatusError(resp)
+}
+
+// probeStatusError reads an empty-body POST as a webhook-URL check. Yamtrack
+// answers an unknown token with 401 and a known one with 400 "Missing payload",
+// so 400 is the success signal here.
+func probeStatusError(status int) error {
+	switch {
+	case status == http.StatusBadRequest:
+		return nil
+	case status == http.StatusUnauthorized:
+		return errInvalidCredential("yamtrack webhook token was rejected")
+	case isRedirect(status):
+		return errInvalidRequest(fmt.Sprintf(
+			"yamtrack webhook URL redirects (status %d); paste the URL Yamtrack is actually served on", status))
+	default:
+		return errInvalidRequest(fmt.Sprintf(
+			"yamtrack webhook URL did not look like a Jellyfin webhook: status %d", status))
+	}
+}
+
+func postStatusError(resp *http.Response) error {
+	status := resp.StatusCode
+	switch {
+	case status == http.StatusUnauthorized:
+		return errInvalidCredential("yamtrack webhook token was rejected")
+	case status == http.StatusTooManyRequests:
+		return errRateLimited(
+			"yamtrack rate limited the webhook request",
+			parseRetryAfter(resp.Header.Get("Retry-After")),
+		)
+	case status == http.StatusRequestTimeout:
+		return errTemporary("yamtrack webhook request timed out: status 408")
+	case isRedirect(status):
+		// Redirects are never followed: the token lives in the URL path and must
+		// not be forwarded to another host. Retrying cannot fix that.
+		return errInvalidRequest(fmt.Sprintf(
+			"yamtrack webhook URL redirects (status %d); reconnect with the URL Yamtrack is served on", status))
+	case status >= 400 && status < 500:
+		return errInvalidRequest(fmt.Sprintf("yamtrack rejected the webhook payload: status %d", status))
+	case status < http.StatusOK || status >= http.StatusMultipleChoices:
+		return errTemporary(fmt.Sprintf("yamtrack webhook request failed: status %d", status))
+	default:
+		return nil
+	}
+}
+
+func isRedirect(status int) bool {
+	return status >= http.StatusMultipleChoices && status < http.StatusBadRequest
+}
+
+// parseRetryAfter reads a Retry-After header in either delay-seconds or
+// HTTP-date form. It returns 0 when the header is absent or unusable.
+func parseRetryAfter(value string) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if when, err := http.ParseTime(value); err == nil {
+		if delay := time.Until(when); delay > 0 {
+			return delay
 		}
 	}
-	if resp.StatusCode == http.StatusUnauthorized {
-		return errInvalidCredential("yamtrack webhook token was rejected")
+	return 0
+}
+
+// transportError classifies a transport failure into a fixed, non-secret
+// message. The raw error is an *url.Error whose text embeds the request URL, and
+// that URL carries the user's Yamtrack token in its path. safe_message is
+// persisted by the host and shown to operators, so it must never see it.
+func transportError(err error) error {
+	var netErr net.Error
+	switch {
+	case errors.Is(err, context.Canceled):
+		return errTemporary("yamtrack webhook request was canceled")
+	case errors.Is(err, context.DeadlineExceeded):
+		return errTemporary("yamtrack did not respond before the request timed out")
+	case errors.As(err, &netErr) && netErr.Timeout():
+		return errTemporary("yamtrack did not respond before the request timed out")
 	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("yamtrack webhook request failed: status %d", resp.StatusCode)
+	var certErr *tls.CertificateVerificationError
+	if errors.As(err, &certErr) {
+		return errPermanent("yamtrack webhook TLS certificate could not be verified")
 	}
-	return nil
+	return errTemporary("yamtrack webhook host could not be reached")
 }
 
 func protoAccount(account webhookAccount) *pluginv1.WatchSyncAccount {
@@ -203,8 +293,9 @@ func protoAccount(account webhookAccount) *pluginv1.WatchSyncAccount {
 }
 
 type classifiedError struct {
-	code    pluginv1.WatchSyncFaultCode
-	message string
+	code       pluginv1.WatchSyncFaultCode
+	message    string
+	retryAfter time.Duration
 }
 
 func (e classifiedError) Error() string { return e.message }
@@ -217,12 +308,34 @@ func errInvalidCredential(message string) error {
 	return classifiedError{code: pluginv1.WatchSyncFaultCode_WATCH_SYNC_FAULT_CODE_INVALID_CREDENTIAL, message: message}
 }
 
+func errTemporary(message string) error {
+	return classifiedError{code: pluginv1.WatchSyncFaultCode_WATCH_SYNC_FAULT_CODE_TEMPORARY, message: message}
+}
+
+func errPermanent(message string) error {
+	return classifiedError{code: pluginv1.WatchSyncFaultCode_WATCH_SYNC_FAULT_CODE_PERMANENT, message: message}
+}
+
+func errRateLimited(message string, retryAfter time.Duration) error {
+	return classifiedError{
+		code:       pluginv1.WatchSyncFaultCode_WATCH_SYNC_FAULT_CODE_RATE_LIMITED,
+		message:    message,
+		retryAfter: retryAfter,
+	}
+}
+
 func faultFromError(err error) *pluginv1.WatchSyncFault {
 	var classified classifiedError
 	if errors.As(err, &classified) {
-		return &pluginv1.WatchSyncFault{Code: classified.code, SafeMessage: classified.message}
+		fault := &pluginv1.WatchSyncFault{Code: classified.code, SafeMessage: classified.message}
+		if classified.retryAfter > 0 {
+			fault.RetryAfter = durationpb.New(classified.retryAfter)
+		}
+		return fault
 	}
-	return temporaryFault(err.Error())
+	// Unclassified errors never reach safe_message: anything wrapping a request
+	// to the webhook URL carries the user's token along with it.
+	return temporaryFault("yamtrack webhook request failed")
 }
 
 func temporaryFault(message string) *pluginv1.WatchSyncFault {

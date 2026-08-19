@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/url"
 	"strings"
 
@@ -8,6 +10,11 @@ import (
 )
 
 const jellyfinWebhookPath = "/webhook/jellyfin"
+
+// completedPercent is the share of an item that must be watched for a stop to
+// count as played. silo-server reports completion_percent on a 0-100 scale
+// (position_seconds / duration_seconds * 100).
+const completedPercent = 90
 
 type jellyfinWebhookPayload struct {
 	Event string              `json:"Event"`
@@ -64,7 +71,16 @@ func parseWebhookURL(raw string) (string, webhookAccount, error) {
 	parsed.Fragment = ""
 	parsed.RawQuery = ""
 	parsed.Path = path
-	return parsed.String(), webhookAccount{ID: token, Username: parsed.Hostname()}, nil
+	return parsed.String(), webhookAccount{ID: accountSubject(token), Username: parsed.Hostname()}, nil
+}
+
+// accountSubject derives a stable, non-secret identifier from the webhook token.
+// The token is the user's Yamtrack credential; it belongs only in
+// WatchSyncCredentials, which the host encrypts at rest. WatchSyncAccount is
+// stored in the clear and shown in the UI, so it gets a digest instead.
+func accountSubject(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 func buildJellyfinPayload(event *pluginv1.WatchSyncEvent, jellyfinEvent string, played bool) (jellyfinWebhookPayload, error) {
@@ -114,11 +130,17 @@ func setProviderID(ids map[string]string, key, value string) {
 	ids[key] = value
 }
 
+// eventPlayed decides whether a stop finished the item.
+//
+// completion_percent is the path that runs in practice: silo-server builds
+// scrobble events in mediaFromIdentity (internal/watchsync/plugin_provider.go)
+// and never populates WatchSyncMedia.metadata. The metadata check is kept as an
+// explicit override for a host that does set one, not as the primary signal.
 func eventPlayed(event *pluginv1.WatchSyncEvent) bool {
 	if fields := event.GetMedia().GetMetadata().GetFields(); fields != nil {
 		if value, ok := fields["completed"]; ok && value.GetBoolValue() {
 			return true
 		}
 	}
-	return event.GetCompletionPercent() >= 90
+	return event.GetCompletionPercent() >= completedPercent
 }
