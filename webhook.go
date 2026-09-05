@@ -11,11 +11,6 @@ import (
 
 const jellyfinWebhookPath = "/webhook/jellyfin"
 
-// completedPercent is the share of an item that must be watched for a stop to
-// count as played. silo-server reports completion_percent on a 0-100 scale
-// (position_seconds / duration_seconds * 100).
-const completedPercent = 90
-
 type jellyfinWebhookPayload struct {
 	Event string              `json:"Event"`
 	Item  jellyfinWebhookItem `json:"Item"`
@@ -132,15 +127,20 @@ func setProviderID(ids map[string]string, key, value string) {
 
 // eventPlayed decides whether a stop finished the item.
 //
-// completion_percent is the path that runs in practice: silo-server builds
-// scrobble events in mediaFromIdentity (internal/watchsync/plugin_provider.go)
-// and never populates WatchSyncMedia.metadata. The metadata check is kept as an
-// explicit override for a host that does set one, not as the primary signal.
+// silo-server sets WatchSyncEvent.completed from its own watched threshold
+// (internal/watchsync/plugin_provider.go watchEventFromScrobble). That flag is
+// authoritative: completion_percent can sit below 100 when the host already
+// considers the play finished, and a high percent must not override an
+// incomplete stop. metadata.completed remains a true-only override for a host
+// that still encodes completion there.
 func eventPlayed(event *pluginv1.WatchSyncEvent) bool {
+	if event.GetCompleted() {
+		return true
+	}
 	if fields := event.GetMedia().GetMetadata().GetFields(); fields != nil {
 		if value, ok := fields["completed"]; ok && value.GetBoolValue() {
 			return true
 		}
 	}
-	return event.GetCompletionPercent() >= completedPercent
+	return false
 }

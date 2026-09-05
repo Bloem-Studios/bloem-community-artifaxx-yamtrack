@@ -3,7 +3,7 @@ module github.com/artifaxx/silo-plugin-yamtrack
 go 1.26.0
 
 require (
-	github.com/Silo-Server/silo-plugin-sdk v0.13.0
+	github.com/Silo-Server/silo-plugin-sdk v0.13.2
 	google.golang.org/protobuf v1.36.11
 )
 
