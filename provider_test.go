@@ -164,7 +164,7 @@ func TestPauseIsNoOp(t *testing.T) {
 		Events: []*pluginv1.WatchSyncEvent{{
 			EventId:   "pause-1",
 			Operation: pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_PAUSE,
-			Media:     movieMedia("603", "", false),
+			Media:     movieMedia("603", ""),
 		}},
 	})
 	if err != nil {
@@ -186,7 +186,8 @@ func TestStopCompletedMoviePostsJellyfinPayload(t *testing.T) {
 		Events: []*pluginv1.WatchSyncEvent{{
 			EventId:   "stop-1",
 			Operation: pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_STOP,
-			Media:     movieMedia("603", "tt0133093", true),
+			Completed: true,
+			Media:     movieMedia("603", "tt0133093"),
 		}},
 	})
 	if err != nil {
@@ -214,13 +215,13 @@ func TestStopCompletedEpisodeUsesSeriesTMDB(t *testing.T) {
 		Events: []*pluginv1.WatchSyncEvent{{
 			EventId:   "stop-ep",
 			Operation: pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_STOP,
+			Completed: true,
 			Media: &pluginv1.WatchSyncMedia{
 				MediaType:         pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_EPISODE,
 				SeasonNumber:      1,
 				EpisodeNumber:     1,
 				ExternalIds:       map[string]string{"tvdb": "303821", "imdb": "tt0583459", "tmdb": "62085"},
 				SeriesExternalIds: map[string]string{"tmdb": "1396", "tvdb": "75930"},
-				Metadata:          completedMetadata(t),
 			},
 		}},
 	})
@@ -249,7 +250,7 @@ func TestStartMovieMarksUnplayed(t *testing.T) {
 		Events: []*pluginv1.WatchSyncEvent{{
 			EventId:   "start-1",
 			Operation: pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_START,
-			Media:     movieMedia("603", "", false),
+			Media:     movieMedia("603", ""),
 		}},
 	})
 	if err != nil {
@@ -272,7 +273,8 @@ func TestStopIncompleteMovieMarksUnplayed(t *testing.T) {
 			EventId:           "stop-incomplete",
 			Operation:         pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_STOP,
 			CompletionPercent: 12,
-			Media:             movieMedia("603", "", false),
+			Completed:         false,
+			Media:             movieMedia("603", ""),
 		}},
 	})
 	if err != nil {
@@ -290,11 +292,11 @@ func TestEpisodeWithoutTVDBOrIMDbIsRejected(t *testing.T) {
 		Events: []*pluginv1.WatchSyncEvent{{
 			EventId:   "ep-tmdb-only",
 			Operation: pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_STOP,
+			Completed: true,
 			Media: &pluginv1.WatchSyncMedia{
 				MediaType:         pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_EPISODE,
 				ExternalIds:       map[string]string{"tmdb": "1396"},
 				SeriesExternalIds: map[string]string{"tmdb": "1396"},
-				Metadata:          completedMetadata(t),
 			},
 		}},
 	})
@@ -315,7 +317,7 @@ func TestNonScrobbleIsRejected(t *testing.T) {
 		Events: []*pluginv1.WatchSyncEvent{{
 			EventId:   "mark-watched",
 			Operation: pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_MARK_WATCHED,
-			Media:     movieMedia("603", "", true),
+			Media:     movieMedia("603", ""),
 		}},
 	})
 	if err != nil {
@@ -342,7 +344,7 @@ func authenticated(webhookURL string) *pluginv1.WatchSyncAuthenticatedContext {
 	}
 }
 
-func movieMedia(tmdbID, imdbID string, completed bool) *pluginv1.WatchSyncMedia {
+func movieMedia(tmdbID, imdbID string) *pluginv1.WatchSyncMedia {
 	ids := map[string]string{}
 	if tmdbID != "" {
 		ids["tmdb"] = tmdbID
@@ -350,24 +352,10 @@ func movieMedia(tmdbID, imdbID string, completed bool) *pluginv1.WatchSyncMedia 
 	if imdbID != "" {
 		ids["imdb"] = imdbID
 	}
-	media := &pluginv1.WatchSyncMedia{
+	return &pluginv1.WatchSyncMedia{
 		MediaType:   pluginv1.WatchSyncMediaType_WATCH_SYNC_MEDIA_TYPE_MOVIE,
 		ExternalIds: ids,
 	}
-	if completed {
-		metadata, _ := structpb.NewStruct(map[string]any{"completed": true})
-		media.Metadata = metadata
-	}
-	return media
-}
-
-func completedMetadata(t *testing.T) *structpb.Struct {
-	t.Helper()
-	metadata, err := structpb.NewStruct(map[string]any{"completed": true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return metadata
 }
 
 // leakToken is distinctive enough that a substring check on a fault message is
@@ -385,28 +373,31 @@ func providerClient(server *httptest.Server) *http.Client {
 	return client
 }
 
-func stopEvent(eventID string, completion float64) *pluginv1.WatchSyncEvent {
+func stopEvent(eventID string, completion float64, completed bool) *pluginv1.WatchSyncEvent {
 	return &pluginv1.WatchSyncEvent{
 		EventId:           eventID,
 		Operation:         pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_STOP,
 		CompletionPercent: completion,
-		Media:             movieMedia("603", "", false),
+		Completed:         completed,
+		Media:             movieMedia("603", ""),
 	}
 }
 
-// TestStopPlayedFromCompletionPercent covers the only completion signal that
-// runs in production: silo-server builds scrobble events without
-// WatchSyncMedia.metadata, so completion_percent decides Played on its own.
-func TestStopPlayedFromCompletionPercent(t *testing.T) {
+// TestStopPlayedUsesHostCompleted covers the production completion signal:
+// silo-server sets WatchSyncEvent.completed and does not populate
+// WatchSyncMedia.metadata. A high completion_percent must not override an
+// incomplete host stop.
+func TestStopPlayedUsesHostCompleted(t *testing.T) {
 	tests := []struct {
 		name       string
 		completion float64
+		completed  bool
 		wantPlayed bool
 	}{
-		{name: "watched to the end", completion: 99.2, wantPlayed: true},
-		{name: "exactly at the threshold", completion: 90, wantPlayed: true},
-		{name: "just under the threshold", completion: 89.9, wantPlayed: false},
-		{name: "abandoned early", completion: 12, wantPlayed: false},
+		{name: "host marked complete below 100 percent", completion: 80, completed: true, wantPlayed: true},
+		{name: "host marked complete at 90 percent", completion: 90, completed: true, wantPlayed: true},
+		{name: "host left incomplete near the end", completion: 95, completed: false, wantPlayed: false},
+		{name: "abandoned early", completion: 12, completed: false, wantPlayed: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -417,7 +408,7 @@ func TestStopPlayedFromCompletionPercent(t *testing.T) {
 			p := NewProvider(server.Client())
 			resp, err := p.ApplyEvents(context.Background(), &pluginv1.WatchSyncApplyEventsRequest{
 				Context: authenticated(server.URL + "/webhook/jellyfin/tok"),
-				Events:  []*pluginv1.WatchSyncEvent{stopEvent("stop-completion", tt.completion)},
+				Events:  []*pluginv1.WatchSyncEvent{stopEvent("stop-completion", tt.completion, tt.completed)},
 			})
 			if err != nil {
 				t.Fatalf("apply: %v", err)
@@ -429,9 +420,23 @@ func TestStopPlayedFromCompletionPercent(t *testing.T) {
 				t.Fatalf("event = %q, want Stop", got.Event)
 			}
 			if got.Item.UserData.Played != tt.wantPlayed {
-				t.Fatalf("played = %v at %.1f%%, want %v", got.Item.UserData.Played, tt.completion, tt.wantPlayed)
+				t.Fatalf("played = %v at %.1f%% completed=%v, want %v", got.Item.UserData.Played, tt.completion, tt.completed, tt.wantPlayed)
 			}
 		})
+	}
+}
+
+func TestEventPlayedHonorsMetadataCompleted(t *testing.T) {
+	metadata, err := structpb.NewStruct(map[string]any{"completed": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := &pluginv1.WatchSyncEvent{
+		Operation: pluginv1.WatchSyncOperation_WATCH_SYNC_OPERATION_SCROBBLE_STOP,
+		Media:     &pluginv1.WatchSyncMedia{Metadata: metadata},
+	}
+	if !eventPlayed(event) {
+		t.Fatal("metadata.completed should mark the stop as played")
 	}
 }
 
@@ -504,7 +509,7 @@ func TestScrobbleStatusByResponseCode(t *testing.T) {
 			p := NewProvider(providerClient(server))
 			resp, err := p.ApplyEvents(context.Background(), &pluginv1.WatchSyncApplyEventsRequest{
 				Context: authenticated(server.URL + "/webhook/jellyfin/tok"),
-				Events:  []*pluginv1.WatchSyncEvent{stopEvent("stop-status", 95)},
+				Events:  []*pluginv1.WatchSyncEvent{stopEvent("stop-status", 95, true)},
 			})
 			if err != nil {
 				t.Fatalf("apply: %v", err)
@@ -530,7 +535,7 @@ func TestRateLimitedFaultCarriesRetryAfter(t *testing.T) {
 	p := NewProvider(server.Client())
 	resp, err := p.ApplyEvents(context.Background(), &pluginv1.WatchSyncApplyEventsRequest{
 		Context: authenticated(server.URL + "/webhook/jellyfin/tok"),
-		Events:  []*pluginv1.WatchSyncEvent{stopEvent("stop-429", 95)},
+		Events:  []*pluginv1.WatchSyncEvent{stopEvent("stop-429", 95, true)},
 	})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
@@ -575,7 +580,7 @@ func TestUnauthorizedDuringApplyIsConnectionFault(t *testing.T) {
 	p := NewProvider(server.Client())
 	resp, err := p.ApplyEvents(context.Background(), &pluginv1.WatchSyncApplyEventsRequest{
 		Context: authenticated(server.URL + "/webhook/jellyfin/tok"),
-		Events:  []*pluginv1.WatchSyncEvent{stopEvent("stop-401", 95)},
+		Events:  []*pluginv1.WatchSyncEvent{stopEvent("stop-401", 95, true)},
 	})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
@@ -612,7 +617,7 @@ func TestFaultsNeverLeakTheWebhookToken(t *testing.T) {
 		p := NewProvider(server.Client())
 		resp, err := p.ApplyEvents(context.Background(), &pluginv1.WatchSyncApplyEventsRequest{
 			Context: authenticated(server.URL + "/webhook/jellyfin/" + leakToken),
-			Events:  []*pluginv1.WatchSyncEvent{stopEvent("leak-500", 95)},
+			Events:  []*pluginv1.WatchSyncEvent{stopEvent("leak-500", 95, true)},
 		})
 		if err != nil {
 			t.Fatalf("apply: %v", err)
@@ -629,7 +634,7 @@ func TestFaultsNeverLeakTheWebhookToken(t *testing.T) {
 		p := NewProvider(client)
 		resp, err := p.ApplyEvents(context.Background(), &pluginv1.WatchSyncApplyEventsRequest{
 			Context: authenticated(webhook),
-			Events:  []*pluginv1.WatchSyncEvent{stopEvent("leak-transport", 95)},
+			Events:  []*pluginv1.WatchSyncEvent{stopEvent("leak-transport", 95, true)},
 		})
 		if err != nil {
 			t.Fatalf("apply: %v", err)

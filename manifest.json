@@ -6,8 +6,8 @@
   "presentation": {
     "display_name": "Yamtrack",
     "summary": "Scrobble movie and episode playback to a self-hosted Yamtrack instance.",
-    "description_markdown": "Sends live playback starts and completed stops to Yamtrack through its existing Jellyfin webhook. History import, progress sync, favorites, and watchlists are not included.",
-    "setup_markdown": "1. Install this plugin and enable it.\n2. In Yamtrack, open **Account settings → Integrations** and copy the Jellyfin webhook URL.\n3. In Silo, open **Settings → Watch Providers**, connect Yamtrack, and paste that URL.\n\nMovies need TMDB or IMDb. Episodes need TVDB or IMDb; Yamtrack skips TMDB-only episodes.",
+    "description_markdown": "Sends live playback starts and completed stops to Yamtrack through its existing Jellyfin webhook. History import, progress sync, favorites, and watchlists are not included. Floppy users should install Silo's Floppy watch-provider plugin instead.",
+    "setup_markdown": "1. Install this plugin and enable it.\n2. In Yamtrack, open **Account settings → Integrations** and copy the Jellyfin webhook URL.\n3. In Silo, open **Settings → Watch Providers**, connect Yamtrack, and paste that URL.\n\nMovies need TMDB or IMDb. Episodes need TVDB or IMDb; Yamtrack skips TMDB-only episodes.\n\nIf you run Floppy (the Yamtrack fork), install Silo's Floppy watch-provider plugin instead of this one.",
     "homepage_url": "https://github.com/FuzzyGrim/Yamtrack",
     "source_url": "https://github.com/artifaxx/silo-plugin-yamtrack",
     "support_url": "https://github.com/artifaxx/silo-plugin-yamtrack/issues",
