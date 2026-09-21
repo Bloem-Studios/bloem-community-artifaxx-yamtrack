@@ -14,3 +14,4 @@ logs/
 .cursor/
 .worktrees/
 .playwright-mcp/
+release/

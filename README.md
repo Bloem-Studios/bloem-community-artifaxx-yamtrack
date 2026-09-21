@@ -1,3 +1,12 @@
+## Bloem community build
+
+This is Bloem's community build of [artifaxx/silo-plugin-yamtrack](https://github.com/artifaxx/silo-plugin-yamtrack) by **artifaxx**
+(contributors: artifaxx). It is ported to the Bloem plugin SDK and listed in the
+Bloem community plugin catalog. All credit for the plugin goes to its author; please
+report plugin behavior issues upstream. See [NOTICE](NOTICE) for provenance.
+
+---
+
 # Silo Yamtrack Plugin
 
 Scrobble-only Silo watch provider for a self-hosted [Yamtrack](https://github.com/FuzzyGrim/Yamtrack) instance.
